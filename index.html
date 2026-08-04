@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>시가 다이어리</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <section id="splashScreen" class="splash-screen">
+    <h1 class="splash-title">경민이를 위한<br />시가 기록 일지</h1>
+    <button id="btnEnter" class="btn btn-primary splash-enter">입장하기</button>
+  </section>
+
+  <div id="appShell" class="hidden">
+  <header class="app-header">
+    <h1>🚬 시가 다이어리</h1>
+  </header>
+
+  <main id="app">
+    <!-- 기록 추가 -->
+    <section id="screen-add" class="screen active">
+      <div class="card">
+        <h2 style="text-align: center;">내가 피우는 시가 사진/영수증 올리기</h2>
+        <div class="photo-drop" id="photoDrop">
+          <img id="photoPreview" class="hidden" />
+          <span id="photoPlaceholder">시가 밴드, 박스, 영수증 등의 사진</span>
+        </div>
+        <div class="field-row">
+          <button id="btnTakePhoto" class="btn btn-secondary">📷 사진 촬영</button>
+          <button id="btnPickPhoto" class="btn btn-secondary">🖼️ 갤러리에서 선택</button>
+        </div>
+        <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden" />
+        <input type="file" id="galleryInput" accept="image/*" class="hidden" />
+        <button id="btnAnalyze" class="btn btn-primary" disabled>AI로 분석하기</button>
+        <p id="analyzeStatus" class="status-text"></p>
+      </div>
+
+      <div class="card" id="detailsCard">
+        <h2>시가 정보</h2>
+        <label class="field">
+          <span>브랜드</span>
+          <input type="text" id="fBrand" placeholder="예: Cohiba" />
+        </label>
+        <label class="field">
+          <span>라인 / 종류</span>
+          <input type="text" id="fLine" placeholder="예: Robustos" />
+        </label>
+        <div class="field-row">
+          <label class="field">
+            <span>원산지</span>
+            <input type="text" id="fOrigin" placeholder="예: 쿠바" />
+          </label>
+          <label class="field">
+            <span>래퍼</span>
+            <input type="text" id="fWrapper" placeholder="예: 콜로라도" />
+          </label>
+        </div>
+        <label class="field">
+          <span>강도</span>
+          <select id="fStrength">
+            <option value="0">미상</option>
+            <option value="1">1 - 매우 순함</option>
+            <option value="2">2 - 순함</option>
+            <option value="3">3 - 중강도</option>
+            <option value="4">4 - 강함</option>
+            <option value="5">5 - 매우 강함</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>전문가 평점 참고</span>
+          <input type="text" id="fRating" placeholder="예: 92 / 100 (참고치)" />
+        </label>
+        <label class="field">
+          <span>테이스팅 노트</span>
+          <textarea id="fNotes" rows="3" placeholder="맛/향 특징"></textarea>
+        </label>
+        <label class="field">
+          <span>참고 판매가 (사진 분석 후 자동 검색됨)</span>
+          <input type="text" id="fPrice" placeholder="예: 약 60,000원 ~ 120,000원" />
+        </label>
+        <button id="btnPriceSearch" class="btn btn-secondary">🔍 AI로 가격 다시 검색</button>
+        <p id="priceSearchStatus" class="status-text"></p>
+      </div>
+
+      <div class="card">
+        <h2>피운 날짜 / 위치</h2>
+        <label class="field">
+          <span>날짜</span>
+          <input type="datetime-local" id="fDate" />
+        </label>
+        <button id="btnGeo" class="btn btn-secondary">📍 현재 위치 가져오기</button>
+        <label class="field">
+          <span>장소 (직접 입력/수정 가능)</span>
+          <input type="text" id="fLocationText" placeholder="예: 서울 강남구 ○○ 시가바" />
+        </label>
+        <div id="mapPreview" class="map-box hidden"></div>
+      </div>
+
+      <div class="card">
+        <label class="field">
+          <span>메모</span>
+          <textarea id="fMemo" rows="2" placeholder="개인 메모 (선택)"></textarea>
+        </label>
+        <button id="btnSave" class="btn btn-primary btn-large">기록 저장</button>
+        <p id="saveStatus" class="status-text"></p>
+      </div>
+    </section>
+
+    <!-- 내 기록 -->
+    <section id="screen-log" class="screen">
+      <div class="card log-controls">
+        <div class="field-row">
+          <label class="field">
+            <span>정렬</span>
+            <select id="sortMode">
+              <option value="desc">최신순</option>
+              <option value="asc">오래된순</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>보기</span>
+            <select id="groupMode">
+              <option value="date">날짜별</option>
+              <option value="brand">시가 종류별</option>
+              <option value="none">전체 목록</option>
+            </select>
+          </label>
+        </div>
+        <p id="logSummary" class="status-text"></p>
+      </div>
+      <div id="logList"></div>
+    </section>
+
+    <!-- 상세보기 -->
+    <section id="screen-detail" class="screen">
+      <button id="btnBackToLog" class="btn btn-secondary">← 목록으로</button>
+      <div class="card" id="detailContent"></div>
+    </section>
+
+    <!-- 설정 -->
+    <section id="screen-settings" class="screen">
+      <div class="card">
+        <h2>AI 사진 분석 설정</h2>
+        <p class="hint-text">사진 분석은 Google Gemini를 사용합니다. 아래에 키를 한 번 저장해두면 이후에는 다시 입력할 필요 없이 자동으로 사용됩니다. 키는 이 브라우저(로컬)에 저장됩니다. AI 분석을 요청하면 입력한 사진과 키가 Google Gemini API로 전송되므로, 개인용으로만 사용하세요.</p>
+        <label class="field">
+          <span>Google Gemini API Key</span>
+          <input type="password" id="fGeminiKey" placeholder="AIza..." />
+        </label>
+        <button id="btnSaveKey" class="btn btn-primary">저장</button>
+        <p id="keyStatus" class="status-text"></p>
+      </div>
+      <div class="card">
+        <h2>데이터 관리</h2>
+        <p class="hint-text">총 <span id="entryCount">0</span>개의 기록이 저장되어 있습니다.</p>
+        <button id="btnClearAll" class="btn btn-danger">전체 기록 삭제</button>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tab-bar">
+    <button class="tab-btn active" data-screen="screen-add">➕ 기록</button>
+    <button class="tab-btn" data-screen="screen-log">📒 내 기록</button>
+    <button class="tab-btn" data-screen="screen-settings">⚙️ 설정</button>
+  </nav>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="cigarDB.js"></script>
+  <script src="idb.js"></script>
+  <script src="ai.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
