@@ -11,12 +11,6 @@
 
   const $ = (id) => document.getElementById(id);
 
-  // ---------- 시작화면 ----------
-  $("btnEnter").addEventListener("click", () => {
-    $("splashScreen").classList.add("hidden");
-    $("appShell").classList.remove("hidden");
-  });
-
   // ---------- 탭 네비게이션 ----------
   function showScreen(screenId) {
     document.querySelectorAll(".screen").forEach((s) => s.classList.remove("active"));
