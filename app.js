@@ -293,14 +293,23 @@
     if (currentPhotoFile) entry.photo = currentPhotoFile;
 
     try {
+      let savedId;
       if (editingId) {
         await CigarStore.updateEntry(editingId, entry);
+        savedId = editingId;
         $("saveStatus").textContent = "✅ 수정되었습니다.";
       } else {
-        await CigarStore.addEntry(entry);
+        savedId = await CigarStore.addEntry(entry);
         $("saveStatus").textContent = "✅ 저장되었습니다.";
       }
-      const savedId = editingId;
+      if (DriveBackup.isSignedIn()) {
+        $("saveStatus").textContent += " (드라이브에 백업 중...)";
+        CigarStore.getEntry(savedId).then((saved) => {
+          DriveBackup.backupEntry(saved, saved.photo || null)
+            .then(() => { $("saveStatus").textContent = $("saveStatus").textContent.replace(" (드라이브에 백업 중...)", " (드라이브 백업 완료)"); })
+            .catch((err) => { console.error(err); $("saveStatus").textContent = $("saveStatus").textContent.replace(" (드라이브에 백업 중...)", " (드라이브 백업 실패)"); });
+        });
+      }
       resetForm();
       setTimeout(() => {
         showScreen("screen-log");
@@ -498,6 +507,82 @@
     const entries = await CigarStore.getAllEntries();
     $("entryCount").textContent = entries.length;
   }
+
+  // ---------- 구글 드라이브 백업 ----------
+  function refreshDriveUI() {
+    if (DriveBackup.isSignedIn()) {
+      const email = DriveBackup.getUserEmail();
+      $("driveStatus").textContent = "✅ 로그인됨" + (email ? " (" + email + ")" : "");
+      $("btnDriveSignIn").textContent = "🔑 다시 로그인";
+      $("btnDriveBackupAll").classList.remove("hidden");
+      $("btnDriveRestore").classList.remove("hidden");
+    } else {
+      $("driveStatus").textContent = "로그인되어 있지 않습니다.";
+      $("btnDriveSignIn").textContent = "🔑 Google 계정으로 로그인";
+      $("btnDriveBackupAll").classList.add("hidden");
+      $("btnDriveRestore").classList.add("hidden");
+    }
+  }
+
+  $("btnDriveSignIn").addEventListener("click", async () => {
+    $("driveActionStatus").textContent = "로그인 중...";
+    try {
+      await DriveBackup.signIn();
+      refreshDriveUI();
+      $("driveActionStatus").textContent = "✅ 로그인되었습니다.";
+    } catch (err) {
+      console.error(err);
+      $("driveActionStatus").textContent = "❌ 로그인 실패: " + err.message;
+    }
+  });
+
+  $("btnDriveBackupAll").addEventListener("click", async () => {
+    $("driveActionStatus").textContent = "백업 중...";
+    try {
+      const entries = await CigarStore.getAllEntries();
+      let done = 0;
+      for (const e of entries) {
+        await DriveBackup.backupEntry(e, e.photo || null);
+        done++;
+        $("driveActionStatus").textContent = "백업 중... (" + done + "/" + entries.length + ")";
+      }
+      $("driveActionStatus").textContent = "✅ 총 " + entries.length + "개 기록을 백업했습니다.";
+    } catch (err) {
+      console.error(err);
+      $("driveActionStatus").textContent = "❌ 백업 실패: " + err.message;
+    }
+  });
+
+  $("btnDriveRestore").addEventListener("click", async () => {
+    $("driveActionStatus").textContent = "드라이브에서 확인 중...";
+    try {
+      const backups = await DriveBackup.listBackups();
+      let restored = 0;
+      for (const file of backups) {
+        const meta = await DriveBackup.downloadJson(file.id);
+        if (!meta || !meta.id) continue;
+        const existing = await CigarStore.getEntry(meta.id);
+        if (existing) continue;
+        let photoBlob = null;
+        if (meta.photoDriveId) {
+          photoBlob = await DriveBackup.downloadBlob(meta.photoDriveId);
+        }
+        const restoredEntry = Object.assign({}, meta);
+        delete restoredEntry.photoDriveId;
+        if (photoBlob) restoredEntry.photo = photoBlob;
+        await CigarStore.addEntry(restoredEntry);
+        restored++;
+        $("driveActionStatus").textContent = "복원 중... (" + restored + "개 추가됨)";
+      }
+      $("driveActionStatus").textContent = "✅ " + restored + "개 기록을 새로 복원했습니다.";
+      refreshSettingsInfo();
+    } catch (err) {
+      console.error(err);
+      $("driveActionStatus").textContent = "❌ 복원 실패: " + err.message;
+    }
+  });
+
+  refreshDriveUI();
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
