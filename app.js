@@ -5,6 +5,8 @@
   let currentPhotoFile = null;
   let currentLat = null;
   let currentLon = null;
+  let currentWeather = null; // { max, min } (섭씨), 위치+날짜 확정 시 조회됨
+  let weatherFetchToken = 0; // 위치/날짜가 빠르게 바뀔 때 오래된 응답이 최신 상태를 덮어쓰지 않도록 함
   let editingId = null;
   let addMap = null, addMarker = null;
   let detailMap = null;
@@ -27,6 +29,22 @@
   });
 
   $("btnBackToLog").addEventListener("click", () => showScreen("screen-log"));
+
+  // ---------- 안드로이드 하드웨어 뒤로가기 ----------
+  // 기본 동작은 웹뷰 히스토리가 없으면 바로 앱을 종료시키는데, 대신 "내 기록" 화면으로 이동시키고
+  // 이미 "내 기록"에 있을 때만 앱을 종료한다. capacitor-app.js는 www/(안드로이드 빌드)에만
+  // 주입되므로 (build-android-www.sh), 웹 배포판에서는 window.capacitorApp이 없어 아무 동작도 하지 않는다.
+  if (window.capacitorApp && window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
+    capacitorApp.App.addListener("backButton", () => {
+      const active = document.querySelector(".screen.active");
+      const activeId = active ? active.id : null;
+      if (activeId === "screen-log") {
+        capacitorApp.App.exitApp();
+      } else {
+        showScreen("screen-log");
+      }
+    });
+  }
 
   // ---------- 사진 선택 (촬영 / 갤러리) ----------
   // 휴대폰 사진은 원본이 매우 클 수 있어, 저장공간과 API 전송량을 줄이기 위해 리사이즈한다.
@@ -128,7 +146,7 @@
     setIfNeeded("fNotes", dbMatch.notes);
   }
 
-  // 가격 검색 공통 로직: 수동 버튼과 AI 분석 성공 후 자동 호출 양쪽에서 재사용
+  // 가격 검색: 사진 분석 성공 후 자동으로만 호출됨 (해외 사이트 달러 가격을 간단히 표시)
   async function runPriceSearch(apiKey, { silentIfMissing = false } = {}) {
     const brand = $("fBrand").value.trim();
     const line = $("fLine").value.trim();
@@ -136,37 +154,21 @@
       if (!silentIfMissing) $("priceSearchStatus").textContent = "⚠️ 브랜드나 라인을 먼저 입력해주세요.";
       return;
     }
-    $("btnPriceSearch").disabled = true;
-    $("priceSearchStatus").textContent = "AI가 온라인 판매가를 검색하고 있습니다...";
+    $("priceSearchStatus").textContent = "해외 판매가를 검색하고 있습니다...";
     try {
       const r = await CigarAI.searchPrice(apiKey, brand, line);
-      const existing = $("fPrice").value.trim();
-      const tag = r.wasSearched ? "[AI 검색]" : "[AI 추정]";
-      const addition = `${tag} ${r.text.replace(/\s*\n+\s*/g, " ")}`;
-      $("fPrice").value = existing ? `${existing} · ${addition}` : addition;
-      const sourceNote = r.sources.length
-        ? " 출처: " + r.sources.map((s) => s.title || s.uri).join(", ")
-        : r.wasSearched
-        ? ""
-        : " (실시간 검색 할당량 초과로 AI 지식 기반 추정치를 대신 사용했습니다)";
-      $("priceSearchStatus").textContent = "✅ 결과를 가격 칸에 추가했습니다." + sourceNote;
+      const priceText = r.text.trim();
+      if (priceText && priceText !== "정보 없음") {
+        $("fPrice").value = priceText + " (개당, 해외 사이트 기준)";
+        $("priceSearchStatus").textContent = "✅ 가격을 찾았습니다.";
+      } else {
+        $("priceSearchStatus").textContent = "해외 판매가 정보를 찾지 못했습니다.";
+      }
     } catch (err) {
       console.error(err);
       $("priceSearchStatus").textContent = "❌ 검색 실패: " + err.message;
-    } finally {
-      $("btnPriceSearch").disabled = false;
     }
   }
-
-  $("btnPriceSearch").addEventListener("click", async () => {
-    const apiKey = localStorage.getItem(GEMINI_KEY_STORAGE) || "";
-    if (!apiKey) {
-      $("priceSearchStatus").textContent = "⚠️ 설정 탭에서 Google Gemini API 키를 먼저 입력해주세요.";
-      showScreen("screen-settings");
-      return;
-    }
-    await runPriceSearch(apiKey);
-  });
 
   function applyAiResult(r) {
     if (r.brand) $("fBrand").value = r.brand;
@@ -204,6 +206,7 @@
         showMap("mapPreview", currentLat, currentLon, false);
         $("btnGeo").textContent = "📍 현재 위치 가져오기";
         $("btnGeo").disabled = false;
+        refreshWeather();
         try {
           const res = await fetch(
             `https://nominatim.openstreetmap.org/reverse?format=json&lat=${currentLat}&lon=${currentLon}&accept-language=ko`
@@ -242,6 +245,7 @@
           const p = addMarker.getLatLng();
           currentLat = p.lat;
           currentLon = p.lng;
+          refreshWeather();
         });
       } else {
         addMap.setView([lat, lon], 15);
@@ -250,6 +254,41 @@
       setTimeout(() => addMap.invalidateSize(), 100);
     }
   }
+
+  // ---------- 날씨 ----------
+  // "datetime-local" 값(YYYY-MM-DDTHH:mm)에서 날짜 부분만 뽑는다.
+  function dateOnly(datetimeLocalValue) {
+    return (datetimeLocalValue || "").slice(0, 10);
+  }
+
+  async function refreshWeather() {
+    const dateStr = dateOnly($("fDate").value);
+    if (currentLat == null || currentLon == null || !dateStr) return;
+    const token = ++weatherFetchToken;
+    $("weatherStatus").textContent = "🌡️ 날씨 조회 중...";
+    try {
+      const w = await WeatherAPI.fetchDailyMinMax(currentLat, currentLon, dateStr);
+      if (token !== weatherFetchToken) return; // 그 사이 위치/날짜가 바뀜
+      currentWeather = w;
+      renderWeatherStatus();
+    } catch (err) {
+      if (token !== weatherFetchToken) return;
+      currentWeather = null;
+      $("weatherStatus").textContent = "🌡️ 날씨 조회 실패";
+    }
+  }
+
+  function renderWeatherStatus() {
+    if (!currentWeather) {
+      $("weatherStatus").textContent = "";
+      return;
+    }
+    const cond = currentWeather.condition;
+    const condText = cond ? `${cond.icon} ${cond.text} · ` : "";
+    $("weatherStatus").textContent = `${condText}🌡️ 최저 ${currentWeather.min}°C / 최고 ${currentWeather.max}°C`;
+  }
+
+  $("fDate").addEventListener("change", refreshWeather);
 
   // ---------- 저장 ----------
   function defaultDateValue() {
@@ -288,6 +327,10 @@
       locationText: $("fLocationText").value.trim(),
       lat: currentLat,
       lon: currentLon,
+      weatherMax: currentWeather ? currentWeather.max : null,
+      weatherMin: currentWeather ? currentWeather.min : null,
+      weatherConditionText: currentWeather && currentWeather.condition ? currentWeather.condition.text : null,
+      weatherConditionIcon: currentWeather && currentWeather.condition ? currentWeather.condition.icon : null,
       memo: $("fMemo").value.trim()
     };
     if (currentPhotoFile) entry.photo = currentPhotoFile;
@@ -304,10 +347,11 @@
       }
       if (DriveBackup.isSignedIn()) {
         $("saveStatus").textContent += " (드라이브에 백업 중...)";
-        CigarStore.getEntry(savedId).then((saved) => {
-          DriveBackup.backupEntry(saved, saved.photo || null)
-            .then(() => { $("saveStatus").textContent = $("saveStatus").textContent.replace(" (드라이브에 백업 중...)", " (드라이브 백업 완료)"); })
-            .catch((err) => { console.error(err); $("saveStatus").textContent = $("saveStatus").textContent.replace(" (드라이브에 백업 중...)", " (드라이브 백업 실패)"); });
+        runFullDriveBackup().then((ok) => {
+          $("saveStatus").textContent = $("saveStatus").textContent.replace(
+            " (드라이브에 백업 중...)",
+            ok ? " (드라이브 백업 완료)" : " (드라이브 백업 실패)"
+          );
         });
       }
       resetForm();
@@ -326,6 +370,8 @@
     currentPhotoFile = null;
     currentLat = null;
     currentLon = null;
+    currentWeather = null;
+    $("weatherStatus").textContent = "";
     $("cameraInput").value = "";
     $("galleryInput").value = "";
     $("photoPreview").classList.add("hidden");
@@ -405,6 +451,7 @@
           <div class="entry-badges">
             ${strengthLabel ? `<span class="badge">${strengthLabel}</span>` : ""}
             ${e.priceText ? `<span class="badge">${escapeHtml(e.priceText)}</span>` : ""}
+            ${e.weatherMax != null ? `<span class="badge">${e.weatherConditionIcon ? e.weatherConditionIcon + " " : "🌡️ "}${e.weatherMin}~${e.weatherMax}°C</span>` : ""}
           </div>
         </div>
       </div>`;
@@ -414,6 +461,39 @@
   $("groupMode").addEventListener("change", renderLogList);
 
   // ---------- 상세 보기 ----------
+  function weatherRowText(e) {
+    const condPart = e.weatherConditionText ? `${e.weatherConditionIcon || ""} ${e.weatherConditionText} · ` : "";
+    return `${condPart}최저 ${e.weatherMin}°C / 최고 ${e.weatherMax}°C`;
+  }
+
+  // 이 날씨 기능이 생기기 전에 저장된 기록(위치는 있지만 날씨가 없는 경우) 상세보기 시
+  // 조용히 한 번 조회해서 화면에 채우고, 다음에 또 조회하지 않도록 DB에도 저장해둔다.
+  async function ensureDetailWeather(e) {
+    if (e.weatherMax != null) return;
+    if (e.lat == null || e.lon == null) return;
+    const dateStr = dateOnly(e.smokedAt);
+    if (!dateStr) return;
+    try {
+      const w = await WeatherAPI.fetchDailyMinMax(e.lat, e.lon, dateStr);
+      if (!w) return;
+      const updated = {
+        weatherMax: w.max,
+        weatherMin: w.min,
+        weatherConditionText: w.condition ? w.condition.text : null,
+        weatherConditionIcon: w.condition ? w.condition.icon : null,
+      };
+      await CigarStore.updateEntry(e.id, updated);
+      const valueEl = $("detailWeatherValue");
+      const rowEl = $("detailWeatherRow");
+      if (valueEl && rowEl) {
+        rowEl.style.display = "";
+        valueEl.textContent = weatherRowText(Object.assign({}, e, updated));
+      }
+    } catch (err) {
+      // 조용히 실패 (조회 실패 시 "조회 중..." 문구가 그대로 남되, 다음 상세보기 진입 시 다시 시도됨)
+    }
+  }
+
   let deleteArmed = false;
   async function showDetail(id) {
     const e = await CigarStore.getEntry(id);
@@ -433,6 +513,10 @@
       ${e.rating ? `<div class="detail-row"><span class="detail-label">전문가 평점</span><span>${escapeHtml(e.rating)}</span></div>` : ""}
       ${e.priceText ? `<div class="detail-row"><span class="detail-label">참고 가격</span><span>${escapeHtml(e.priceText)}</span></div>` : ""}
       ${e.locationText ? `<div class="detail-row"><span class="detail-label">장소</span><span>${escapeHtml(e.locationText)}</span></div>` : ""}
+      <div class="detail-row" id="detailWeatherRow" style="${e.weatherMax != null || (e.lat && e.lon) ? "" : "display:none"}">
+        <span class="detail-label">날씨</span>
+        <span id="detailWeatherValue">${e.weatherMax != null ? weatherRowText(e) : "조회 중..."}</span>
+      </div>
       ${e.notes ? `<div class="detail-notes"><strong>테이스팅 노트</strong><br>${escapeHtml(e.notes).replace(/\n/g, "<br>")}</div>` : ""}
       ${e.memo ? `<div class="detail-notes"><strong>메모</strong><br>${escapeHtml(e.memo).replace(/\n/g, "<br>")}</div>` : ""}
       <div id="detailMap" class="map-box ${e.lat ? "" : "hidden"}" style="margin-top:14px;"></div>
@@ -441,6 +525,7 @@
     `;
 
     if (e.lat && e.lon) showMap("detailMap", e.lat, e.lon, true);
+    ensureDetailWeather(e);
 
     $("btnEditEntry").addEventListener("click", () => loadEntryIntoForm(e));
     $("btnDeleteEntry").addEventListener("click", async (ev) => {
@@ -460,6 +545,13 @@
     currentPhotoFile = e.photo || null;
     currentLat = e.lat || null;
     currentLon = e.lon || null;
+    currentWeather = e.weatherMax != null
+      ? {
+          max: e.weatherMax,
+          min: e.weatherMin,
+          condition: e.weatherConditionText ? { text: e.weatherConditionText, icon: e.weatherConditionIcon } : null,
+        }
+      : null;
     $("fBrand").value = e.brand || "";
     $("fLine").value = e.line || "";
     $("fOrigin").value = e.origin || "";
@@ -478,6 +570,13 @@
       $("btnAnalyze").disabled = false;
     }
     if (e.lat && e.lon) showMap("mapPreview", e.lat, e.lon, false);
+    if (currentWeather) {
+      renderWeatherStatus();
+    } else if (e.lat && e.lon) {
+      refreshWeather(); // 이 기능 추가 이전에 저장된 기록이라 날씨가 없는 경우, 조용히 한 번 조회 시도
+    } else {
+      $("weatherStatus").textContent = "";
+    }
     showScreen("screen-add");
   }
 
@@ -536,45 +635,63 @@
     }
   });
 
-  $("btnDriveBackupAll").addEventListener("click", async () => {
-    $("driveActionStatus").textContent = "백업 중...";
+  // 전체 기록을 드라이브에 백업: 이미 올라간 사진은 다시 올리지 않고, 텍스트 정보 전체는
+  // backup_YYYY-MM-DD.json 파일 하나로 모아서 저장한다. 저장 후 자동 백업과 수동 버튼 양쪽에서 재사용.
+  async function runFullDriveBackup() {
     try {
       const entries = await CigarStore.getAllEntries();
-      let done = 0;
-      for (const e of entries) {
-        await DriveBackup.backupEntry(e, e.photo || null);
-        done++;
-        $("driveActionStatus").textContent = "백업 중... (" + done + "/" + entries.length + ")";
+      const result = await DriveBackup.backupAll(entries, (p) => {
+        $("driveActionStatus").textContent = "백업 중... (" + p.done + "/" + p.total + ")";
+      });
+      for (const u of result.photoUpdates) {
+        await CigarStore.updateEntry(u.id, { photoDriveId: u.photoDriveId });
       }
-      $("driveActionStatus").textContent = "✅ 총 " + entries.length + "개 기록을 백업했습니다.";
+      $("driveActionStatus").textContent =
+        "✅ " +
+        entries.length +
+        '개 기록을 "' +
+        result.fileName +
+        '"로 백업했습니다' +
+        (result.uploadedPhotoCount > 0
+          ? " (사진 " + result.uploadedPhotoCount + "장 새로 업로드)"
+          : " (사진은 이미 백업되어 있어 건너뜀)") +
+        ".";
+      return true;
     } catch (err) {
       console.error(err);
       $("driveActionStatus").textContent = "❌ 백업 실패: " + err.message;
+      return false;
     }
+  }
+
+  $("btnDriveBackupAll").addEventListener("click", async () => {
+    $("driveActionStatus").textContent = "백업 준비 중...";
+    await runFullDriveBackup();
   });
 
   $("btnDriveRestore").addEventListener("click", async () => {
-    $("driveActionStatus").textContent = "드라이브에서 확인 중...";
+    $("driveActionStatus").textContent = "드라이브에서 백업 파일을 확인하는 중...";
     try {
-      const backups = await DriveBackup.listBackups();
+      const result = await DriveBackup.restoreLatest();
+      if (!result.fileName) {
+        $("driveActionStatus").textContent = "드라이브에 백업 파일이 없습니다.";
+        return;
+      }
       let restored = 0;
-      for (const file of backups) {
-        const meta = await DriveBackup.downloadJson(file.id);
+      for (const meta of result.entries) {
         if (!meta || !meta.id) continue;
         const existing = await CigarStore.getEntry(meta.id);
         if (existing) continue;
-        let photoBlob = null;
-        if (meta.photoDriveId) {
-          photoBlob = await DriveBackup.downloadBlob(meta.photoDriveId);
-        }
         const restoredEntry = Object.assign({}, meta);
-        delete restoredEntry.photoDriveId;
-        if (photoBlob) restoredEntry.photo = photoBlob;
+        if (meta.photoDriveId) {
+          restoredEntry.photo = await DriveBackup.downloadBlob(meta.photoDriveId);
+        }
         await CigarStore.addEntry(restoredEntry);
         restored++;
         $("driveActionStatus").textContent = "복원 중... (" + restored + "개 추가됨)";
       }
-      $("driveActionStatus").textContent = "✅ " + restored + "개 기록을 새로 복원했습니다.";
+      $("driveActionStatus").textContent =
+        '✅ "' + result.fileName + '" 백업에서 ' + restored + "개 기록을 복원했습니다.";
       refreshSettingsInfo();
     } catch (err) {
       console.error(err);
@@ -583,6 +700,21 @@
   });
 
   refreshDriveUI();
+  // 이전에 로그인한 적이 있으면, 사용자가 화면을 처음 터치/클릭하는 순간(브라우저가 팝업을 허용하는
+  // "사용자 제스처" 타이밍)에 맞춰 팝업 없이 자동으로 재로그인을 시도한다. 페이지 로드 직후 곧바로
+  // 시도하면 사용자 제스처가 아니라서 브라우저가 팝업을 차단해버리기 때문에 첫 상호작용까지 대기한다.
+  (function attemptSilentDriveReauth() {
+    let tried = false;
+    const trigger = () => {
+      if (tried) return;
+      tried = true;
+      document.removeEventListener("pointerdown", trigger, true);
+      document.removeEventListener("keydown", trigger, true);
+      DriveBackup.trySilentSignIn().then((ok) => { if (ok) refreshDriveUI(); });
+    };
+    document.addEventListener("pointerdown", trigger, true);
+    document.addEventListener("keydown", trigger, true);
+  })();
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));

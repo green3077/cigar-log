@@ -140,20 +140,19 @@ const CigarAI = (() => {
     return { text: text.trim(), sources };
   }
 
-  // Gemini의 Google Search grounding으로 실시간 판매가를 검색. 무료 API 키는 검색 그라운딩 할당량이
-  // 없어 429가 나는 경우가 많아, 그 경우 검색 없이 AI 자체 지식 기반 추정치로 자동 대체한다.
+  // Gemini의 Google Search grounding으로 해외 사이트 판매가(달러)를 검색. 무료 API 키는 검색 그라운딩
+  // 할당량이 없어 429가 나는 경우가 많아, 그 경우 검색 없이 AI 자체 지식 기반 추정치로 자동 대체한다.
   async function searchPrice(apiKey, brand, line) {
     if (!apiKey) throw new Error("설정 탭에서 Google Gemini API 키를 먼저 입력해주세요.");
     const query = [brand, line].filter(Boolean).join(" ");
     if (!query) throw new Error("브랜드나 라인을 먼저 입력해주세요.");
 
-    const searchPrompt = `"${query}" 시가(cigar)의 현재 온라인 판매가를 검색해서 알려주세요.
-개비(1개비) 기준 가격을 우선으로, 여러 판매처의 가격대를 조사해서 아래 형식으로 한국어로 간결하게 답변하세요:
+    const searchPrompt = `"${query}" 시가(cigar)를 해외(미국 등) 온라인 시가 판매 사이트에서 개비(1개비) 기준 몇 달러에 파는지 알려주세요.
+반드시 아래 형식 한 줄로만, 다른 설명 없이 답변하세요:
 
-- 개당 가격대(달러 또는 원화, 조사된 그대로):
-- 참고한 판매처 이름 1~3곳:
+$최소가격~$최대가격
 
-반드시 실제 검색 결과에 기반해서 답하고, 확실하지 않으면 그렇다고 밝히세요. 3~4줄 이내로 간결하게 답변하세요.`;
+가격대를 모르면 "정보 없음"이라고만 답변하세요.`;
 
     try {
       const r = await callGemini(apiKey, searchPrompt, true);
@@ -161,9 +160,7 @@ const CigarAI = (() => {
     } catch (err) {
       // 검색 그라운딩이 막혀있는 API 키(무료 티어 등)는 항상 429가 나므로, 검색 없이 재시도
       if (err.status !== 429) throw err;
-      const fallbackPrompt = `"${query}" 시가(cigar)의 일반적인 온라인 판매가를 알고 있는 지식 범위 내에서 알려주세요.
-개비(1개비) 기준 대략적인 가격대(달러 또는 원화)를 2~3줄 이내로 간결하게 답변하고, 실시간 검색이 아닌 추정치임을 밝혀주세요.`;
-      const r = await callGemini(apiKey, fallbackPrompt, false);
+      const r = await callGemini(apiKey, searchPrompt, false);
       return { ...r, wasSearched: false };
     }
   }

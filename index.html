@@ -72,10 +72,9 @@
           <textarea id="fNotes" rows="3" placeholder="맛/향 특징"></textarea>
         </label>
         <label class="field">
-          <span>참고 판매가 (사진 분석 후 자동 검색됨)</span>
-          <input type="text" id="fPrice" placeholder="예: 약 60,000원 ~ 120,000원" />
+          <span>참고 판매가 (사진 분석 후 해외 사이트 기준 자동 검색됨)</span>
+          <input type="text" id="fPrice" placeholder="예: $8~12 (개당, 해외 사이트 기준)" />
         </label>
-        <button id="btnPriceSearch" class="btn btn-secondary">🔍 AI로 가격 다시 검색</button>
         <p id="priceSearchStatus" class="status-text"></p>
       </div>
 
@@ -91,6 +90,7 @@
           <input type="text" id="fLocationText" placeholder="예: 서울 강남구 ○○ 시가바" />
         </label>
         <div id="mapPreview" class="map-box hidden"></div>
+        <p id="weatherStatus" class="status-text"></p>
       </div>
 
       <div class="card">
@@ -148,10 +148,10 @@
       </div>
       <div class="card">
         <h2>☁️ 구글 드라이브 백업</h2>
-        <p class="hint-text">구글 계정으로 로그인하면 사진과 기록이 본인 구글 드라이브의 "시가다이어리_백업" 폴더에 자동으로 저장되어, 기기를 바꾸거나 브라우저 데이터가 지워져도 다시 불러올 수 있습니다.</p>
+        <p class="hint-text">구글 계정으로 로그인하면 폰을 바꾸거나 앱을 실수로 지워도 기록을 되살릴 수 있습니다. 사진은 본인 구글 드라이브의 "시가다이어리_백업" 폴더에 저장되며, 이미 올라간 사진은 다시 올리지 않습니다. 나머지 정보(브랜드/특징/피운 장소 등)는 backup_날짜.json 파일 하나로 모아 저장됩니다.</p>
         <p id="driveStatus" class="status-text">로그인되어 있지 않습니다.</p>
         <button id="btnDriveSignIn" class="btn btn-primary">🔑 Google 계정으로 로그인</button>
-        <button id="btnDriveBackupAll" class="btn btn-secondary hidden">📤 전체 기록 지금 백업하기</button>
+        <button id="btnDriveBackupAll" class="btn btn-secondary hidden">☁️ 백업</button>
         <button id="btnDriveRestore" class="btn btn-secondary hidden">📥 드라이브에서 복원하기</button>
         <p id="driveActionStatus" class="status-text"></p>
       </div>
@@ -174,6 +174,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="cigarDB.js"></script>
   <script src="idb.js"></script>
+  <script src="weather.js"></script>
   <script src="ai.js"></script>
   <script src="drive.js"></script>
   <script src="app.js"></script>
