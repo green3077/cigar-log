@@ -1,8 +1,7 @@
 // 시가 다이어리 메인 앱 로직
 (() => {
-  const GEMINI_KEY_STORAGE = "cigarlog_gemini_key";
-
   let currentPhotoFile = null;
+  let currentMemoPhotos = []; // [{ blob: Blob, driveId: string|null }] - 같이 있던 사람/장소 사진 (여러 장)
   let currentLat = null;
   let currentLon = null;
   let currentWeather = null; // { max, min } (섭씨), 위치+날짜 확정 시 조회됨
@@ -73,6 +72,13 @@
       $("photoPlaceholder").classList.add("hidden");
       $("btnAnalyze").disabled = false;
       $("analyzeStatus").textContent = "";
+      // 사진 파일 자체의 촬영/생성 시각(EXIF, lastModified 등)이 아니라
+      // 실제로 앱에서 사진을 찍거나 업로드한 지금 이 순간을 기록 시각으로 사용한다.
+      // (편집 중인 기존 기록의 사진만 교체하는 경우는 원래 smokedAt을 건드리지 않는다.)
+      if (!editingId) {
+        $("fDate").value = defaultDateValue();
+        refreshWeather();
+      }
     } catch (err) {
       currentPhotoFile = null;
       $("btnAnalyze").disabled = true;
@@ -83,6 +89,65 @@
   $("btnPickPhoto").addEventListener("click", () => $("galleryInput").click());
   $("cameraInput").addEventListener("change", (e) => handlePhotoFile(e.target.files[0]));
   $("galleryInput").addEventListener("change", (e) => handlePhotoFile(e.target.files[0]));
+
+  // ---------- 사진 원본 크게 보기 (썸네일 탭 시) ----------
+  function openLightbox(url) {
+    $("lightboxImg").src = url;
+    $("photoLightbox").classList.remove("hidden");
+  }
+  $("photoLightbox").addEventListener("click", () => {
+    $("photoLightbox").classList.add("hidden");
+    $("lightboxImg").src = "";
+  });
+
+  // ---------- 메모용 사진 (같이 있던 사람 / 장소, 여러 장) ----------
+  function renderMemoPhotos() {
+    const wrap = $("memoPhotosList");
+    wrap.innerHTML = "";
+    currentMemoPhotos.forEach((p, idx) => {
+      const item = document.createElement("div");
+      item.className = "memo-photo-item";
+      const img = document.createElement("img");
+      img.src = URL.createObjectURL(p.blob);
+      img.addEventListener("click", () => openLightbox(img.src));
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "memo-photo-remove";
+      removeBtn.textContent = "✕";
+      removeBtn.addEventListener("click", () => {
+        currentMemoPhotos.splice(idx, 1);
+        renderMemoPhotos();
+      });
+      item.appendChild(img);
+      item.appendChild(removeBtn);
+      wrap.appendChild(item);
+    });
+    wrap.classList.toggle("hidden", currentMemoPhotos.length === 0);
+  }
+
+  async function handleMemoPhotoFiles(fileList) {
+    $("memoPhotoStatus").textContent = "";
+    for (const file of Array.from(fileList || [])) {
+      try {
+        const blob = await preparePhotoFile(file);
+        currentMemoPhotos.push({ blob, driveId: null });
+      } catch (err) {
+        console.error(err);
+        $("memoPhotoStatus").textContent = "❌ " + err.message;
+      }
+    }
+    renderMemoPhotos();
+  }
+  $("btnMemoTakePhoto").addEventListener("click", () => $("memoCameraInput").click());
+  $("btnMemoPickPhoto").addEventListener("click", () => $("memoGalleryInput").click());
+  $("memoCameraInput").addEventListener("change", (e) => {
+    handleMemoPhotoFiles(e.target.files);
+    e.target.value = "";
+  });
+  $("memoGalleryInput").addEventListener("change", (e) => {
+    handleMemoPhotoFiles(e.target.files);
+    e.target.value = "";
+  });
 
   // AI가 실패했을 때 현재 입력된 브랜드/라인 텍스트로 로컬 DB 검색을 자동으로 시도
   function tryDbFallback() {
@@ -97,26 +162,17 @@
 
   // ---------- AI 분석 (Gemini) ----------
   $("btnAnalyze").addEventListener("click", async () => {
-    const apiKey = localStorage.getItem(GEMINI_KEY_STORAGE) || "";
     if (!currentPhotoFile) return;
-    if (!apiKey) {
-      const dbMatch = tryDbFallback();
-      $("analyzeStatus").textContent = dbMatch
-        ? `⚠️ Gemini API 키가 없어 DB 매칭으로 대체했습니다: ${dbMatch.brandKo} ${dbMatch.line}`
-        : "⚠️ 설정 탭에서 Google Gemini API 키를 먼저 입력해주세요.";
-      if (!dbMatch) showScreen("screen-settings");
-      return;
-    }
     $("btnAnalyze").disabled = true;
     $("analyzeStatus").textContent = "AI가 사진을 분석하고 있습니다...";
     try {
-      const result = await CigarAI.analyzeImage(apiKey, currentPhotoFile);
+      const result = await CigarAI.analyzeImage(currentPhotoFile);
       applyAiResult(result);
       if (result.isReceipt) {
         $("analyzeStatus").textContent = "✅ 영수증으로 인식했습니다. 내용을 확인해주세요.";
       } else {
         $("analyzeStatus").textContent = `✅ 분석 완료 (인식 확신도 ${result.confidence ?? "?"}%). 가격을 자동 검색하고 있습니다...`;
-        await runPriceSearch(apiKey, { silentIfMissing: true });
+        await runPriceSearch({ silentIfMissing: true });
         $("analyzeStatus").textContent = `✅ 분석 완료 (인식 확신도 ${result.confidence ?? "?"}%). 내용을 확인/수정해주세요.`;
       }
     } catch (err) {
@@ -147,7 +203,7 @@
   }
 
   // 가격 검색: 사진 분석 성공 후 자동으로만 호출됨 (해외 사이트 달러 가격을 간단히 표시)
-  async function runPriceSearch(apiKey, { silentIfMissing = false } = {}) {
+  async function runPriceSearch({ silentIfMissing = false } = {}) {
     const brand = $("fBrand").value.trim();
     const line = $("fLine").value.trim();
     if (!brand && !line) {
@@ -156,7 +212,7 @@
     }
     $("priceSearchStatus").textContent = "해외 판매가를 검색하고 있습니다...";
     try {
-      const r = await CigarAI.searchPrice(apiKey, brand, line);
+      const r = await CigarAI.searchPrice(brand, line);
       const priceText = r.text.trim();
       if (priceText && priceText !== "정보 없음") {
         $("fPrice").value = priceText + " (개당, 해외 사이트 기준)";
@@ -285,7 +341,9 @@
     }
     const cond = currentWeather.condition;
     const condText = cond ? `${cond.icon} ${cond.text} · ` : "";
-    $("weatherStatus").textContent = `${condText}🌡️ 최저 ${currentWeather.min}°C / 최고 ${currentWeather.max}°C`;
+    const sourceText = currentWeather.station ? ` (기상청 ${currentWeather.station} 관측소 실측)` : " (추정치)";
+    $("weatherStatus").textContent =
+      `${condText}🌡️ 최저 ${currentWeather.min}°C / 최고 ${currentWeather.max}°C${sourceText}`;
   }
 
   $("fDate").addEventListener("change", refreshWeather);
@@ -331,7 +389,9 @@
       weatherMin: currentWeather ? currentWeather.min : null,
       weatherConditionText: currentWeather && currentWeather.condition ? currentWeather.condition.text : null,
       weatherConditionIcon: currentWeather && currentWeather.condition ? currentWeather.condition.icon : null,
-      memo: $("fMemo").value.trim()
+      weatherStation: currentWeather ? currentWeather.station || null : null,
+      memo: $("fMemo").value.trim(),
+      memoPhotos: currentMemoPhotos
     };
     if (currentPhotoFile) entry.photo = currentPhotoFile;
 
@@ -368,6 +428,11 @@
   function resetForm() {
     editingId = null;
     currentPhotoFile = null;
+    currentMemoPhotos = [];
+    renderMemoPhotos();
+    $("memoCameraInput").value = "";
+    $("memoGalleryInput").value = "";
+    $("memoPhotoStatus").textContent = "";
     currentLat = null;
     currentLon = null;
     currentWeather = null;
@@ -463,13 +528,15 @@
   // ---------- 상세 보기 ----------
   function weatherRowText(e) {
     const condPart = e.weatherConditionText ? `${e.weatherConditionIcon || ""} ${e.weatherConditionText} · ` : "";
-    return `${condPart}최저 ${e.weatherMin}°C / 최고 ${e.weatherMax}°C`;
+    const sourceText = e.weatherStation ? ` (기상청 ${e.weatherStation} 관측소 실측)` : " (추정치)";
+    return `${condPart}최저 ${e.weatherMin}°C / 최고 ${e.weatherMax}°C${sourceText}`;
   }
 
-  // 이 날씨 기능이 생기기 전에 저장된 기록(위치는 있지만 날씨가 없는 경우) 상세보기 시
-  // 조용히 한 번 조회해서 화면에 채우고, 다음에 또 조회하지 않도록 DB에도 저장해둔다.
+  // 이 날씨 기능이 생기기 전에 저장된 기록(위치는 있지만 날씨가 없는 경우) 상세보기 시,
+  // 그리고 기상청 ASOS 연동 이전에 Open-Meteo 추정치로만 저장되어 있던 기록(weatherStation이 없는 경우)도
+  // 조용히 다시 조회해서 더 정확한 기상청 실측값으로 갱신하고 DB에도 저장해둔다.
   async function ensureDetailWeather(e) {
-    if (e.weatherMax != null) return;
+    if (e.weatherMax != null && e.weatherStation) return;
     if (e.lat == null || e.lon == null) return;
     const dateStr = dateOnly(e.smokedAt);
     if (!dateStr) return;
@@ -481,6 +548,7 @@
         weatherMin: w.min,
         weatherConditionText: w.condition ? w.condition.text : null,
         weatherConditionIcon: w.condition ? w.condition.icon : null,
+        weatherStation: w.station || null,
       };
       await CigarStore.updateEntry(e.id, updated);
       const valueEl = $("detailWeatherValue");
@@ -519,6 +587,7 @@
       </div>
       ${e.notes ? `<div class="detail-notes"><strong>테이스팅 노트</strong><br>${escapeHtml(e.notes).replace(/\n/g, "<br>")}</div>` : ""}
       ${e.memo ? `<div class="detail-notes"><strong>메모</strong><br>${escapeHtml(e.memo).replace(/\n/g, "<br>")}</div>` : ""}
+      ${e.memoPhotos && e.memoPhotos.length ? `<div class="detail-memo-photos">${e.memoPhotos.map((p) => `<img class="detail-memo-photo-thumb" src="${URL.createObjectURL(p.blob)}" />`).join("")}</div>` : ""}
       <div id="detailMap" class="map-box ${e.lat ? "" : "hidden"}" style="margin-top:14px;"></div>
       <button id="btnEditEntry" class="btn btn-secondary" style="margin-top:14px;">✏️ 수정</button>
       <button id="btnDeleteEntry" class="btn btn-danger">🗑️ 삭제</button>
@@ -526,6 +595,9 @@
 
     if (e.lat && e.lon) showMap("detailMap", e.lat, e.lon, true);
     ensureDetailWeather(e);
+    $("detailContent").querySelectorAll(".detail-memo-photo-thumb").forEach((img) => {
+      img.addEventListener("click", () => openLightbox(img.src));
+    });
 
     $("btnEditEntry").addEventListener("click", () => loadEntryIntoForm(e));
     $("btnDeleteEntry").addEventListener("click", async (ev) => {
@@ -543,13 +615,16 @@
   function loadEntryIntoForm(e) {
     editingId = e.id;
     currentPhotoFile = e.photo || null;
+    currentMemoPhotos = (e.memoPhotos || []).map((p) => ({ blob: p.blob, driveId: p.driveId || null }));
+    renderMemoPhotos();
     currentLat = e.lat || null;
     currentLon = e.lon || null;
-    currentWeather = e.weatherMax != null
+    currentWeather = e.weatherMax != null && e.weatherStation
       ? {
           max: e.weatherMax,
           min: e.weatherMin,
           condition: e.weatherConditionText ? { text: e.weatherConditionText, icon: e.weatherConditionIcon } : null,
+          station: e.weatherStation,
         }
       : null;
     $("fBrand").value = e.brand || "";
@@ -581,13 +656,6 @@
   }
 
   // ---------- 설정 ----------
-  $("fGeminiKey").value = localStorage.getItem(GEMINI_KEY_STORAGE) || "";
-  $("btnSaveKey").addEventListener("click", () => {
-    localStorage.setItem(GEMINI_KEY_STORAGE, $("fGeminiKey").value.trim());
-    $("keyStatus").textContent = "✅ 저장되었습니다. 다음부터는 다시 입력할 필요 없이 자동으로 사용됩니다.";
-    setTimeout(() => ($("keyStatus").textContent = ""), 3000);
-  });
-
   let clearArmed = false;
   $("btnClearAll").addEventListener("click", async (ev) => {
     if (!clearArmed) {
@@ -644,7 +712,7 @@
         $("driveActionStatus").textContent = "백업 중... (" + p.done + "/" + p.total + ")";
       });
       for (const u of result.photoUpdates) {
-        await CigarStore.updateEntry(u.id, { photoDriveId: u.photoDriveId });
+        await CigarStore.updateEntry(u.id, { photoDriveId: u.photoDriveId, memoPhotos: u.memoPhotos });
       }
       $("driveActionStatus").textContent =
         "✅ " +
@@ -686,6 +754,15 @@
         if (meta.photoDriveId) {
           restoredEntry.photo = await DriveBackup.downloadBlob(meta.photoDriveId);
         }
+        if (meta.memoPhotoDriveIds && meta.memoPhotoDriveIds.length) {
+          restoredEntry.memoPhotos = [];
+          for (const driveId of meta.memoPhotoDriveIds) {
+            if (!driveId) continue;
+            const blob = await DriveBackup.downloadBlob(driveId);
+            restoredEntry.memoPhotos.push({ blob, driveId });
+          }
+        }
+        delete restoredEntry.memoPhotoDriveIds;
         await CigarStore.addEntry(restoredEntry);
         restored++;
         $("driveActionStatus").textContent = "복원 중... (" + restored + "개 추가됨)";

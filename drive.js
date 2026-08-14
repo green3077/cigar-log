@@ -243,8 +243,9 @@ const DriveBackup = (() => {
     return uploaded.id;
   }
 
-  // 사진은 이미 드라이브에 올라간 적 있으면(entry.photoDriveId) 건너뛰고, 아직 없는 사진만 새로 업로드한다.
-  // 나머지 텍스트 정보(브랜드/특징/피운 장소 등) 전부는 backup_YYYY-MM-DD.json 파일 하나에 모아서 저장한다.
+  // 사진은 이미 드라이브에 올라간 적 있으면(entry.photoDriveId / memoPhotos[i].driveId) 건너뛰고,
+  // 아직 없는 사진만 새로 업로드한다. 나머지 텍스트 정보(브랜드/특징/피운 장소 등) 전부는
+  // backup_YYYY-MM-DD.json 파일 하나에 모아서 저장한다.
   async function backupAll(entries, onProgress) {
     const folder = await ensureFolder();
     const metaList = [];
@@ -257,13 +258,33 @@ const DriveBackup = (() => {
       if (!photoDriveId && entry.photo) {
         const uploaded = await uploadFile("entry_" + entry.id + ".jpg", entry.photo, folder);
         photoDriveId = uploaded.id;
-        photoUpdates.push({ id: entry.id, photoDriveId: photoDriveId });
         uploadedPhotoCount++;
+      }
+      const memoPhotos = entry.memoPhotos || [];
+      const memoPhotoDriveIds = [];
+      for (let mi = 0; mi < memoPhotos.length; mi++) {
+        const mp = memoPhotos[mi];
+        let driveId = mp.driveId || null;
+        if (!driveId && mp.blob) {
+          const uploaded = await uploadFile("entry_" + entry.id + "_memo" + mi + ".jpg", mp.blob, folder);
+          driveId = uploaded.id;
+          uploadedPhotoCount++;
+        }
+        memoPhotoDriveIds.push(driveId);
+      }
+      if (photoDriveId !== (entry.photoDriveId || null) || memoPhotoDriveIds.some((id, idx) => id !== (memoPhotos[idx] && memoPhotos[idx].driveId))) {
+        photoUpdates.push({
+          id: entry.id,
+          photoDriveId: photoDriveId,
+          memoPhotos: memoPhotos.map((mp, idx) => ({ blob: mp.blob, driveId: memoPhotoDriveIds[idx] })),
+        });
       }
       if (onProgress) onProgress({ done: i, total: entries.length });
       const rest = Object.assign({}, entry);
       delete rest.photo;
+      delete rest.memoPhotos;
       rest.photoDriveId = photoDriveId;
+      rest.memoPhotoDriveIds = memoPhotoDriveIds;
       metaList.push(rest);
     }
     const fileName = todayBackupFileName();
