@@ -675,6 +675,49 @@
     $("entryCount").textContent = entries.length;
   }
 
+  // ---------- 업데이트 확인 ----------
+  // 사이드로드 앱은 스스로를 조용히 덮어쓸 수 없으므로(설치는 항상 사용자 확인 필요),
+  // 새 버전이 있으면 외부 브라우저로 APK 다운로드 URL을 열어 다운로드->설치를 대신 시작해준다.
+  const APP_VERSION_CODE = 2;
+  const APP_VERSION_NAME = "1.1";
+  const UPDATE_MANIFEST_URL = "https://green3077.github.io/cigar-log/version.json";
+  const IS_NATIVE_UPDATE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  const UpdateBridge = IS_NATIVE_UPDATE ? window.Capacitor.registerPlugin("UpdateBridge") : null;
+  let pendingApkUrl = null;
+
+  $("appVersionText").textContent = "현재 버전: " + APP_VERSION_NAME;
+
+  $("btnCheckUpdate").addEventListener("click", async () => {
+    if (pendingApkUrl) {
+      if (IS_NATIVE_UPDATE && UpdateBridge) {
+        UpdateBridge.openExternal({ url: pendingApkUrl }).catch(() => {
+          $("updateStatus").textContent = "업데이트 파일을 여는 데 실패했습니다.";
+        });
+      } else {
+        window.open(pendingApkUrl, "_blank");
+      }
+      return;
+    }
+    $("updateStatus").textContent = "업데이트 확인 중...";
+    try {
+      const res = await fetch(UPDATE_MANIFEST_URL + "?t=" + Date.now());
+      const info = await res.json();
+      if (!info || typeof info.versionCode !== "number") {
+        $("updateStatus").textContent = "업데이트 정보를 확인하지 못했습니다.";
+        return;
+      }
+      if (info.versionCode <= APP_VERSION_CODE) {
+        $("updateStatus").textContent = "이미 최신 버전입니다 (v" + APP_VERSION_NAME + ")";
+        return;
+      }
+      pendingApkUrl = info.apkUrl;
+      $("btnCheckUpdate").textContent = "새 버전(" + (info.versionName || info.versionCode) + ") 다운로드하기";
+      $("updateStatus").textContent = "다시 눌러서 다운로드를 시작하세요.";
+    } catch (e) {
+      $("updateStatus").textContent = "업데이트 확인에 실패했습니다. 네트워크를 확인해주세요.";
+    }
+  });
+
   // ---------- 구글 드라이브 백업 ----------
   function refreshDriveUI() {
     if (DriveBackup.isSignedIn()) {
