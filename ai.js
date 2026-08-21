@@ -1,9 +1,76 @@
 // Gemini Vision API를 이용한 시가 사진/영수증 분석
 const CigarAI = (() => {
-  // gemini-3.6-flash를 우선 사용하고, 만약 이 모델명이 유효하지 않은 계정/환경이면
-  // (400/404 응답 시) 구형 모델로 자동 폴백한다.
-  const GEMINI_MODELS = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash"];
+  // 하드코딩된 모델명은 구글이 구모델을 내리면 언젠가 전부 404가 난다.
+  // 그래서 ListModels로 그 시점에 실제 쓸 수 있는 모델을 찾아 캐시해두고,
+  // 그마저 실패하면 아래 정적 목록을 최후 수단으로 순서대로 시도한다.
+  const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"];
+  const MODEL_CACHE_KEY = "cigarAiResolvedModel";
+  const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
   const geminiUrl = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
+  function getCachedModel() {
+    try {
+      const raw = localStorage.getItem(MODEL_CACHE_KEY);
+      if (!raw) return null;
+      const { model, ts } = JSON.parse(raw);
+      if (!model || Date.now() - ts > MODEL_CACHE_TTL_MS) return null;
+      return model;
+    } catch {
+      return null;
+    }
+  }
+
+  function setCachedModel(model) {
+    try {
+      localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify({ model, ts: Date.now() }));
+    } catch {
+      // localStorage 접근 불가 시 캐시 없이 매번 재탐색
+    }
+  }
+
+  function clearCachedModel() {
+    try {
+      localStorage.removeItem(MODEL_CACHE_KEY);
+    } catch {
+      // ignore
+    }
+  }
+
+  // 계정에서 실제로 generateContent를 지원하는 최신 flash 계열 모델을 찾는다.
+  async function discoverModel(apiKey) {
+    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000", {
+      headers: { "x-goog-api-key": apiKey }
+    });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    const models = Array.isArray(data?.models) ? data.models : [];
+    const flashCandidates = models
+      .filter((m) => typeof m?.name === "string" && m.name.startsWith("models/"))
+      .filter((m) => (m.supportedGenerationMethods || []).includes("generateContent"))
+      .map((m) => m.name.slice("models/".length))
+      .filter((name) => /flash/i.test(name) && !/tts|embedding|image|live|thinking/i.test(name));
+    if (flashCandidates.length === 0) return null;
+
+    // 버전 숫자가 클수록, "latest"/"-lite" 없는 정식명이 우선순위가 높도록 정렬
+    const versionOf = (name) => {
+      const match = name.match(/gemini-(\d+(?:\.\d+)?)/);
+      return match ? parseFloat(match[1]) : 0;
+    };
+    flashCandidates.sort((a, b) => {
+      const versionDiff = versionOf(b) - versionOf(a);
+      if (versionDiff !== 0) return versionDiff;
+      return a.includes("lite") - b.includes("lite");
+    });
+    return flashCandidates[0];
+  }
+
+  async function resolveModel(apiKey) {
+    const cached = getCachedModel();
+    if (cached) return cached;
+    const discovered = await discoverModel(apiKey).catch(() => null);
+    if (discovered) setCachedModel(discovered);
+    return discovered;
+  }
 
   const SYSTEM_PROMPT = `당신은 시가(cigar) 전문가입니다. 사용자가 올린 사진은 시가 밴드(라벨), 시가 박스, 또는 구매 영수증 중 하나입니다.
 사진을 분석해서 아래 JSON 형식으로만 답변하세요. 다른 설명 텍스트는 절대 추가하지 마세요.
@@ -56,17 +123,32 @@ const CigarAI = (() => {
     }
   }
 
-  // 여러 모델을 순서대로 시도. 모델명이 잘못됐거나(400) 지원되지 않는 경우(404)에만 다음 모델로 넘어간다.
+  async function callModel(apiKey, model, body) {
+    const res = await fetch(geminiUrl(model), {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify(body)
+    });
+    return { res, model };
+  }
+
+  // 계정에서 실제로 동작하는 모델을 우선 시도하고, 모델명이 잘못됐거나(400) 지원되지 않는
+  // 경우(404)에만 캐시를 지우고 정적 목록을 순서대로 폴백 시도한다.
   async function requestWithModelFallback(apiKey, body) {
+    const resolved = await resolveModel(apiKey);
     let last = null;
+    if (resolved) {
+      last = await callModel(apiKey, resolved, body);
+      if (![400, 404].includes(last.res.status)) return last;
+      clearCachedModel();
+    }
     for (const model of GEMINI_MODELS) {
-      const res = await fetch(geminiUrl(model), {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-        body: JSON.stringify(body)
-      });
-      last = { res, model };
-      if (![400, 404].includes(res.status)) return last;
+      if (model === resolved) continue;
+      last = await callModel(apiKey, model, body);
+      if (![400, 404].includes(last.res.status)) {
+        setCachedModel(model);
+        return last;
+      }
     }
     return last;
   }
