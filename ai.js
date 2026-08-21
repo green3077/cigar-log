@@ -1,76 +1,14 @@
-// Gemini Vision API를 이용한 시가 사진/영수증 분석
+// Gemini Vision API를 이용한 시가 사진/영수증 분석.
+// 실제 Gemini API 키는 사용자 기기가 아니라 Cloudflare Worker 프록시(cigar-log-gemini-proxy)에만
+// 저장되어 있다 — APK를 친구들과 공유해도 키가 노출되지 않도록, 앱은 이 프록시로만 요청을 보낸다.
 const CigarAI = (() => {
-  // 하드코딩된 모델명은 구글이 구모델을 내리면 언젠가 전부 404가 난다.
-  // 그래서 ListModels로 그 시점에 실제 쓸 수 있는 모델을 찾아 캐시해두고,
-  // 그마저 실패하면 아래 정적 목록을 최후 수단으로 순서대로 시도한다.
-  const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"];
-  const MODEL_CACHE_KEY = "cigarAiResolvedModel";
-  const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-  const geminiUrl = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-
-  function getCachedModel() {
-    try {
-      const raw = localStorage.getItem(MODEL_CACHE_KEY);
-      if (!raw) return null;
-      const { model, ts } = JSON.parse(raw);
-      if (!model || Date.now() - ts > MODEL_CACHE_TTL_MS) return null;
-      return model;
-    } catch {
-      return null;
-    }
-  }
-
-  function setCachedModel(model) {
-    try {
-      localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify({ model, ts: Date.now() }));
-    } catch {
-      // localStorage 접근 불가 시 캐시 없이 매번 재탐색
-    }
-  }
-
-  function clearCachedModel() {
-    try {
-      localStorage.removeItem(MODEL_CACHE_KEY);
-    } catch {
-      // ignore
-    }
-  }
-
-  // 계정에서 실제로 generateContent를 지원하는 최신 flash 계열 모델을 찾는다.
-  async function discoverModel(apiKey) {
-    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000", {
-      headers: { "x-goog-api-key": apiKey }
-    });
-    if (!res.ok) return null;
-    const data = await res.json().catch(() => null);
-    const models = Array.isArray(data?.models) ? data.models : [];
-    const flashCandidates = models
-      .filter((m) => typeof m?.name === "string" && m.name.startsWith("models/"))
-      .filter((m) => (m.supportedGenerationMethods || []).includes("generateContent"))
-      .map((m) => m.name.slice("models/".length))
-      .filter((name) => /flash/i.test(name) && !/tts|embedding|image|live|thinking/i.test(name));
-    if (flashCandidates.length === 0) return null;
-
-    // 버전 숫자가 클수록, "latest"/"-lite" 없는 정식명이 우선순위가 높도록 정렬
-    const versionOf = (name) => {
-      const match = name.match(/gemini-(\d+(?:\.\d+)?)/);
-      return match ? parseFloat(match[1]) : 0;
-    };
-    flashCandidates.sort((a, b) => {
-      const versionDiff = versionOf(b) - versionOf(a);
-      if (versionDiff !== 0) return versionDiff;
-      return a.includes("lite") - b.includes("lite");
-    });
-    return flashCandidates[0];
-  }
-
-  async function resolveModel(apiKey) {
-    const cached = getCachedModel();
-    if (cached) return cached;
-    const discovered = await discoverModel(apiKey).catch(() => null);
-    if (discovered) setCachedModel(discovered);
-    return discovered;
-  }
+  const PROXY_BASE = "https://cigar-log-gemini-proxy.cigar-log-gemini-proxy.workers.dev";
+  // gemini-3.6-flash를 우선 사용하고, 만약 이 모델명이 유효하지 않은 계정/환경이면
+  // (400/404 응답 시) gemini-flash-latest로 자동 폴백한다.
+  // (2026-08-21: gemini-2.5-flash/gemini-2.0-flash는 구글이 완전히 폐지해 항상
+  // "no longer available" 404를 반환하는 것이 확인되어 폴백 목록에서 제거함)
+  const GEMINI_MODELS = ["gemini-3.6-flash", "gemini-flash-latest"];
+  const geminiUrl = (model) => `${PROXY_BASE}/v1beta/models/${model}:generateContent`;
 
   const SYSTEM_PROMPT = `당신은 시가(cigar) 전문가입니다. 사용자가 올린 사진은 시가 밴드(라벨), 시가 박스, 또는 구매 영수증 중 하나입니다.
 사진을 분석해서 아래 JSON 형식으로만 답변하세요. 다른 설명 텍스트는 절대 추가하지 마세요.
@@ -123,32 +61,17 @@ const CigarAI = (() => {
     }
   }
 
-  async function callModel(apiKey, model, body) {
-    const res = await fetch(geminiUrl(model), {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-      body: JSON.stringify(body)
-    });
-    return { res, model };
-  }
-
-  // 계정에서 실제로 동작하는 모델을 우선 시도하고, 모델명이 잘못됐거나(400) 지원되지 않는
-  // 경우(404)에만 캐시를 지우고 정적 목록을 순서대로 폴백 시도한다.
-  async function requestWithModelFallback(apiKey, body) {
-    const resolved = await resolveModel(apiKey);
+  // 여러 모델을 순서대로 시도. 모델명이 잘못됐거나(400) 지원되지 않는 경우(404)에만 다음 모델로 넘어간다.
+  async function requestWithModelFallback(body) {
     let last = null;
-    if (resolved) {
-      last = await callModel(apiKey, resolved, body);
-      if (![400, 404].includes(last.res.status)) return last;
-      clearCachedModel();
-    }
     for (const model of GEMINI_MODELS) {
-      if (model === resolved) continue;
-      last = await callModel(apiKey, model, body);
-      if (![400, 404].includes(last.res.status)) {
-        setCachedModel(model);
-        return last;
-      }
+      const res = await fetch(geminiUrl(model), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      last = { res, model };
+      if (![400, 404].includes(res.status)) return last;
     }
     return last;
   }
@@ -174,8 +97,7 @@ const CigarAI = (() => {
     };
   }
 
-  async function analyzeImage(apiKey, file) {
-    if (!apiKey) throw new Error("설정 탭에서 Google Gemini API 키를 먼저 입력해주세요.");
+  async function analyzeImage(file) {
     const base64 = await fileToBase64(file);
     const mimeType = file.type || "image/jpeg";
 
@@ -189,7 +111,7 @@ const CigarAI = (() => {
       ],
       generationConfig: { responseMimeType: "application/json", temperature: 0.2 }
     };
-    const { res, model } = await requestWithModelFallback(apiKey, body);
+    const { res, model } = await requestWithModelFallback(body);
 
     if (!res.ok) {
       const errBody = await res.text().catch(() => "");
@@ -202,11 +124,11 @@ const CigarAI = (() => {
     return normalizeAnalysis(extractJson(text));
   }
 
-  async function callGemini(apiKey, prompt, useSearchGrounding) {
+  async function callGemini(prompt, useSearchGrounding) {
     const body = { contents: [{ role: "user", parts: [{ text: prompt }] }] };
     if (useSearchGrounding) body.tools = [{ google_search: {} }];
 
-    const { res, model } = await requestWithModelFallback(apiKey, body);
+    const { res, model } = await requestWithModelFallback(body);
     if (!res.ok) {
       const errBody = await res.text().catch(() => "");
       const err = new Error(`요청 실패 (${res.status}, ${model}): ${friendlyError(errBody)}`);
@@ -224,8 +146,7 @@ const CigarAI = (() => {
 
   // Gemini의 Google Search grounding으로 해외 사이트 판매가(달러)를 검색. 무료 API 키는 검색 그라운딩
   // 할당량이 없어 429가 나는 경우가 많아, 그 경우 검색 없이 AI 자체 지식 기반 추정치로 자동 대체한다.
-  async function searchPrice(apiKey, brand, line) {
-    if (!apiKey) throw new Error("설정 탭에서 Google Gemini API 키를 먼저 입력해주세요.");
+  async function searchPrice(brand, line) {
     const query = [brand, line].filter(Boolean).join(" ");
     if (!query) throw new Error("브랜드나 라인을 먼저 입력해주세요.");
 
@@ -237,12 +158,12 @@ $최소가격~$최대가격
 가격대를 모르면 "정보 없음"이라고만 답변하세요.`;
 
     try {
-      const r = await callGemini(apiKey, searchPrompt, true);
+      const r = await callGemini(searchPrompt, true);
       return { ...r, wasSearched: true };
     } catch (err) {
       // 검색 그라운딩이 막혀있는 API 키(무료 티어 등)는 항상 429가 나므로, 검색 없이 재시도
       if (err.status !== 429) throw err;
-      const r = await callGemini(apiKey, searchPrompt, false);
+      const r = await callGemini(searchPrompt, false);
       return { ...r, wasSearched: false };
     }
   }
