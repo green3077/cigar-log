@@ -1,0 +1,6 @@
+{
+  "versionCode": 3,
+  "versionName": "1.2",
+  "apkUrl": "https://green3077.github.io/cigar-log/cigar-log.apk",
+  "notes": "AI 분석 프록시 주소를 Vercel로 이전(구 Cloudflare Worker는 인증 없이 호출 가능해 보안 조치로 막음) - APK가 구 주소로 남아있어 AI 분석이 403으로 실패하던 문제 수정"
+}
