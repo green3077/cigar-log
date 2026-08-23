@@ -2,7 +2,12 @@
 // 실제 Gemini API 키는 사용자 기기가 아니라 Cloudflare Worker 프록시(cigar-log-gemini-proxy)에만
 // 저장되어 있다 — APK를 친구들과 공유해도 키가 노출되지 않도록, 앱은 이 프록시로만 요청을 보낸다.
 const CigarAI = (() => {
-  const PROXY_BASE = "https://cigar-log-gemini-proxy.cigar-log-gemini-proxy.workers.dev";
+  // 2026-08-23: Cloudflare Worker 발신 IP가 구글 Gemini API 지역제한(400)에 계속 걸려 Vercel로 이전
+  // (자세한 내용은 [[project_fire_inspection]] 메모리 참고 - 두 앱이 같은 프록시를 공유).
+  const PROXY_BASE = "https://gemini-api-proxy-sooty-one.vercel.app";
+  // 프록시가 요구하는 공유 시크릿(2026-08-23 추가, [[project_fire_inspection]]과 공유하는 프록시에
+  // 인증이 전혀 없어 누구든 workers.dev 주소만 알면 이 사용자의 키로 무제한 호출 가능했던 문제 대응).
+  const APP_SECRET = "a255ad243fa8457b822e73d365cba1e0";
   // gemini-3.6-flash를 우선 사용하고, 만약 이 모델명이 유효하지 않은 계정/환경이면
   // (400/404 응답 시) gemini-flash-latest로 자동 폴백한다.
   // (2026-08-21: gemini-2.5-flash/gemini-2.0-flash는 구글이 완전히 폐지해 항상
@@ -67,7 +72,7 @@ const CigarAI = (() => {
     for (const model of GEMINI_MODELS) {
       const res = await fetch(geminiUrl(model), {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-app-secret": APP_SECRET },
         body: JSON.stringify(body)
       });
       last = { res, model };
