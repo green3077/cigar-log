@@ -220,3 +220,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-
   outline: 3px solid var(--accent-light);
   outline-offset: 2px;
 }
+
+/* 시가 평가 (별 5개) */
+.star-rating { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+.star-rating .star {
+  background: none; border: none; padding: 0 2px; cursor: pointer;
+  font-size: 32px; line-height: 1; color: var(--border);
+}
+.star-rating .star.on { color: var(--accent-light); }
+.star-rating-label { margin-left: 8px; font-size: 13px; color: var(--text-dim); }
+.rating-stars { color: var(--accent-light); letter-spacing: 1px; }

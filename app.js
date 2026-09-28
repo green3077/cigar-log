@@ -100,6 +100,26 @@
     $("lightboxImg").src = "";
   });
 
+  // ---------- 시가 평가 (별 5개 만점, 0 = 미평가) ----------
+  // 이미 선택된 별을 다시 누르면 평가를 취소(0)한다 - 잘못 눌렀을 때 되돌릴 수 있게.
+  let currentMyRating = 0;
+  function starsText(n) {
+    return "★".repeat(n) + "☆".repeat(5 - n);
+  }
+  function setMyRating(n) {
+    currentMyRating = n;
+    $("fMyRating").querySelectorAll(".star").forEach((btn) => {
+      btn.classList.toggle("on", Number(btn.dataset.value) <= n);
+    });
+    $("fMyRatingLabel").textContent = n ? `${n} / 5` : "미평가";
+  }
+  $("fMyRating").querySelectorAll(".star").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const v = Number(btn.dataset.value);
+      setMyRating(v === currentMyRating ? 0 : v);
+    });
+  });
+
   // ---------- 메모용 사진 (같이 있던 사람 / 장소, 여러 장) ----------
   function renderMemoPhotos() {
     const wrap = $("memoPhotosList");
@@ -432,6 +452,7 @@
       weatherConditionIcon: currentWeather && currentWeather.condition ? currentWeather.condition.icon : null,
       weatherStation: currentWeather ? currentWeather.station || null : null,
       memo: $("fMemo").value.trim(),
+      myRating: currentMyRating,
       memoPhotos: currentMemoPhotos
     };
     if (currentPhotoFile) entry.photo = currentPhotoFile;
@@ -486,6 +507,7 @@
     $("analyzeStatus").textContent = "";
     ["fBrand", "fLine", "fOrigin", "fWrapper", "fRating", "fNotes", "fPrice", "fLocationText", "fMemo"].forEach((id) => ($(id).value = ""));
     $("fStrength").value = "0";
+    setMyRating(0);
     $("fDate").value = defaultDateValue();
     $("mapPreview").classList.add("hidden");
     $("saveStatus").textContent = "";
@@ -555,6 +577,7 @@
           <div class="entry-title">${escapeHtml(title)}</div>
           <div class="entry-sub">${fmtDate(e.smokedAt)}${e.locationText ? " · " + escapeHtml(truncate(e.locationText, 20)) : ""}</div>
           <div class="entry-badges">
+            ${e.myRating ? `<span class="badge rating-stars">${starsText(e.myRating)}</span>` : ""}
             ${strengthLabel ? `<span class="badge">${strengthLabel}</span>` : ""}
             ${e.priceText ? `<span class="badge">${escapeHtml(e.priceText)}</span>` : ""}
             ${e.weatherMax != null ? `<span class="badge">${e.weatherConditionIcon ? e.weatherConditionIcon + " " : "🌡️ "}${e.weatherMin}~${e.weatherMax}°C</span>` : ""}
@@ -628,6 +651,7 @@
       </div>
       ${e.notes ? `<div class="detail-notes"><strong>테이스팅 노트</strong><br>${escapeHtml(e.notes).replace(/\n/g, "<br>")}</div>` : ""}
       ${e.memo ? `<div class="detail-notes"><strong>메모</strong><br>${escapeHtml(e.memo).replace(/\n/g, "<br>")}</div>` : ""}
+      ${e.myRating ? `<div class="detail-row"><span class="detail-label">시가 평가</span><span class="rating-stars">${starsText(e.myRating)}</span></div>` : ""}
       ${e.memoPhotos && e.memoPhotos.length ? `<div class="detail-memo-photos">${e.memoPhotos.map((p) => `<img class="detail-memo-photo-thumb" src="${URL.createObjectURL(p.blob)}" />`).join("")}</div>` : ""}
       <div id="detailMap" class="map-box ${e.lat ? "" : "hidden"}" style="margin-top:14px;"></div>
       <button id="btnEditEntry" class="btn btn-secondary" style="margin-top:14px;">✏️ 수정</button>
@@ -679,6 +703,7 @@
     $("fDate").value = e.smokedAt || defaultDateValue();
     $("fLocationText").value = e.locationText || "";
     $("fMemo").value = e.memo || "";
+    setMyRating(e.myRating || 0);
     if (e.photo) {
       $("photoPreview").src = URL.createObjectURL(e.photo);
       $("photoPreview").classList.remove("hidden");
